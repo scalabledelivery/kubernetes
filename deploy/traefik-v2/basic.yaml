@@ -1,4 +1,6 @@
 # Be sure to replace noreply@letsencrypt.org with your email.
+# Example:
+#    curl -sL https://raw.githubusercontent.com/scalabledelivery/kubernetes/master/deploy/traefik-v2/basic.yaml | sed 's/noreply@letsencrypt.org/me@organization.tld/g' | kubectl -f -
 
 # Namespace for deployment
 # ----------------------------------------------------------------
