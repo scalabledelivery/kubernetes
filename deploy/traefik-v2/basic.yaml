@@ -256,7 +256,7 @@ metadata:
 spec:
   selector:
     app: traefik
-  type: LoadBalancer
+  type: ClusterIP
   ports:
   - protocol: TCP
     targetPort: 80
