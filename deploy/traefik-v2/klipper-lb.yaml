@@ -1,5 +1,10 @@
 ---
 apiVersion: v1
+kind: Namespace
+metadata:
+  name: traefik-system
+---
+apiVersion: v1
 data:
   entry: |-
       #!/bin/sh
@@ -27,13 +32,13 @@ data:
 kind: ConfigMap
 metadata:
   name: scripts-klipper-lb
-  namespace: kube-system
+  namespace: traefik-system
 ---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: svclb-traefik
-  namespace: kube-system
+  namespace: traefik-system
 spec:
   selector:
     matchLabels:
