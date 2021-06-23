@@ -11,7 +11,7 @@ data:
       DEST_IP=$(echo "${DEST_IP}" | grep -E -o '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' || dig +short "${DEST_IP}")
       iptables -t nat -I PREROUTING ! -s ${DEST_IP}/32 -p ${DEST_PROTO} --dport ${SRC_PORT} -j DNAT --to ${DEST_IP}:${DEST_PORT}
       iptables -t nat -I POSTROUTING -d ${DEST_IP}/32 -p ${DEST_PROTO} -j MASQUERADE
-      [ ! -e /pause ] || mkfifo /pause
+      [ -e /pause ] || mkfifo /pause
       </pause
 kind: ConfigMap
 metadata:
