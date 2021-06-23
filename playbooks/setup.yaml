@@ -13,7 +13,7 @@
     apply_traefik: yes
     apply_argo_workflows: yes
     apply_argo_cd: yes
-    apply_argo_events: yes
+    apply_argo_events: no
     apply_resolve_host_patcher: yes
 
     # You can retrieve a list of available versions with this one-liner
