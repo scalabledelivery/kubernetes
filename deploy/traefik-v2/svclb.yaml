@@ -1,7 +1,7 @@
 ---
 apiVersion: v1
 data:
-  entry: |-
+  entry: |
       #!/bin/sh
       set -e -x
       trap exit TERM INT
