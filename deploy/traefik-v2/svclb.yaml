@@ -3,6 +3,8 @@ apiVersion: v1
 data:
   entry: |
       #!/bin/sh
+      # Modified version of https://github.com/k3s-io/klipper-lb/blob/master/entry
+      # License: https://github.com/k3s-io/klipper-lb/blob/master/LICENSE
       set -e -x
       trap exit TERM INT
       echo 1 > /proc/sys/net/ipv4/ip_forward
