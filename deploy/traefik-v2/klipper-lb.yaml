@@ -67,7 +67,7 @@ spec:
             - name: DEST_PORT
               value: "80"
             - name: DEST_IP
-              value: traefik-ingress-controller-http-service.traefik.svc.cluster.local
+              value: traefik-ingress-controller-http-service
           image: rancher/klipper-lb:v0.2.0
           imagePullPolicy: IfNotPresent
           ports:
@@ -96,7 +96,7 @@ spec:
             - name: DEST_PORT
               value: "443"
             - name: DEST_IP
-              value: traefik-ingress-controller-http-service.traefik.svc.cluster.local
+              value: traefik-ingress-controller-http-service
           image: rancher/klipper-lb:v0.2.0
           imagePullPolicy: IfNotPresent
           ports:
