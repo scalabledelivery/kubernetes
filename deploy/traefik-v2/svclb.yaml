@@ -5,10 +5,8 @@ data:
       #!/bin/sh
       set -e -x
       trap exit TERM INT
-      if [ `cat /proc/sys/net/ipv4/ip_forward` != 1 ]; then
-          echo ip_forward not enabled
-          exit 1
-      fi
+      echo 1 > /proc/sys/net/ipv4/ip_forward
+      [ `cat /proc/sys/net/ipv4/ip_forward` != 1 ]
       apk add -U bind-tools iptables
       DEST_IP=$(echo "${DEST_IP}" | grep -E -o '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' || dig +short "${DEST_IP}")
       iptables -t nat -I PREROUTING ! -s ${DEST_IP}/32 -p ${DEST_PROTO} --dport ${SRC_PORT} -j DNAT --to ${DEST_IP}:${DEST_PORT}
