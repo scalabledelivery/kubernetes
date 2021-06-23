@@ -2,13 +2,6 @@
 # Example:
 #    curl -sL https://raw.githubusercontent.com/scalabledelivery/kubernetes/master/deploy/traefik-v2/basic.yaml | sed 's/noreply@letsencrypt.org/me@organization.tld/g' | kubectl -f -
 
-# Namespace for deployment
-# ----------------------------------------------------------------
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: traefik-system
 # Custom Resources (crds)
 # ----------------------------------------------------------------
 ---
