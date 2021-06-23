@@ -15,7 +15,7 @@ data:
       </pause
 kind: ConfigMap
 metadata:
-  name: scripts-klipper-lb
+  name: scripts-svclb
   namespace: traefik-system
 ---
 apiVersion: apps/v1
@@ -37,7 +37,7 @@ spec:
       - name: config
         configMap:
           defaultMode: 420
-          name: scripts-klipper-lb
+          name: scripts-svclb
 
       containers:
         - name: lb-port-80
