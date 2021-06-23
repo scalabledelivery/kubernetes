@@ -8,7 +8,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: traefik
+  name: traefik-system
 # Custom Resources (crds)
 # ----------------------------------------------------------------
 ---
@@ -169,7 +169,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: traefik-ingress-controller
-  namespace: traefik
+  namespace: traefik-system
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1beta1
@@ -182,13 +182,13 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: traefik-ingress-controller
-    namespace: traefik
+    namespace: traefik-system
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: traefik
-  namespace: traefik
+  namespace: traefik-system
   labels:
     app: traefik
 spec:
@@ -252,7 +252,7 @@ kind: Service
 apiVersion: v1
 metadata:
   name: traefik-ingress-controller-http-service
-  namespace: traefik
+  namespace: traefik-system
 spec:
   selector:
     app: traefik
@@ -271,7 +271,7 @@ kind: Service
 apiVersion: v1
 metadata:
   name: traefik-ingress-controller-dashboard-service
-  namespace: traefik
+  namespace: traefik-system
 spec:
   selector:
     app: traefik
