@@ -13,7 +13,7 @@
     apply_traefik: yes
     apply_argo_workflows: yes
     apply_argo_cd: yes
-    apply_argo_events: no
+    apply_argo_events: yes
     apply_resolve_host_patcher: yes
 
     # You can retrieve a list of available versions with this one-liner
@@ -551,10 +551,7 @@
         inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
 
     - name: install argo events
-      shell: >
-        kubectl apply -f https://raw.githubusercontent.com/argoproj/argo-events/stable/manifests/install.yaml &&
-        kubectl apply -f https://raw.githubusercontent.com/argoproj/argo-events/stable/manifests/install-validating-webhook.yaml &&
-        kubectl apply -n argo-events -f https://raw.githubusercontent.com/argoproj/argo-events/stable/examples/eventbus/native.yaml
+      shell: kubectl apply -f https://raw.githubusercontent.com/argoproj/argo-events/stable/manifests/install.yaml &&
       when: >
         apply_argo_events == true
         and
