@@ -1,0 +1,568 @@
+- hosts: all
+  # Facts are not neccessary for this particular playbook. 
+  gather_facts: yes
+  vars:
+    # This will create a root CA that pods can use to make
+    # self-signed certs via an init container. This is useful for
+    # setting up registries that are only cluser accessible.
+    setup_internal_ca: yes
+
+    # Flags to override pre-installed apps
+    apply_metrics_server: yes
+    apply_longhorn: yes
+    apply_traefik: yes
+    apply_argo_workflows: yes
+    apply_argo_cd: yes
+    apply_argo_events: yes
+    apply_resolve_host_patcher: yes
+
+    # You can retrieve a list of available versions with this one-liner
+    # curl -sL https://apt.kubernetes.io/dists/kubernetes-xenial/main/binary-amd64/Packages | grep -A1 '^Package: kubelet' | awk '/^Version/ {print $2}'
+    kubernetes_version: 1.21.2-00
+  tasks:
+    # This section prepares nodes for kubernetes installation
+    # -----------------------------------------------------------------------------
+    - name: OS Support Check
+      fail:
+        msg: "Unsupport OS: {{ansible_distribution}} {{ ansible_distribution_version }}"
+      any_errors_fatal: true
+      # For additional versions, just add:
+      # and not (ansible_distribution == "Ubuntu" and ansible_distribution_version == "XX.XX")
+      when: >
+        not (ansible_distribution == "Ubuntu" and ansible_distribution_version == "20.04")
+
+    - name: Check OS vCPUs
+      fail:
+        msg: "2 vCPUs required, found only {{ ansible_processor_vcpus }} vCPUs."
+      any_errors_fatal: true
+      when: >
+        ansible_processor_vcpus < 2
+
+    - name: Check OS memory
+      fail:
+        msg: "2000mb of memory required, found only {{ ansible_memtotal_mb }}mb."
+      any_errors_fatal: true
+      when: >
+        ansible_memtotal_mb < 2000
+
+
+    - name: add kubernetes repo gpg key # curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+
+    - name: add kubernetes repo # echo 'deb https://apt.kubernetes.io/ kubernetes-xenial main' > /etc/apt/sources.list.d/kubernetes.list
+      apt_repository:
+        repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+        state: present
+
+    - name: update apt cache
+      apt:
+        update_cache: yes
+
+    - name: remove ufw
+      apt:
+        state: absent
+        pkg:
+        - ufw
+
+    - name: install common tools and dependencies
+      apt:
+        state: present
+        pkg:
+        - open-iscsi
+        - bash
+        - curl
+        - grep
+        - gawk
+        - util-linux # provides findmnt, blkid,lsblk
+        - nfs-common
+        - jq
+        - net-tools
+        - apt-transport-https
+        - etcd-client
+        - vim
+    
+    - name: enable service iscsid
+      ansible.builtin.service:
+        name: iscsid
+        state: started
+        enabled: yes
+
+    - name: set overlay in /etc/modules-load.d/containerd.conf
+      lineinfile:
+        path: /etc/modules-load.d/containerd.conf
+        line: overlay
+        create: yes
+
+    - name: set br_netfilter in /etc/modules-load.d/containerd.conf
+      lineinfile:
+        path: /etc/modules-load.d/containerd.conf
+        line: br_netfilter
+        create: yes
+
+    - name: set net.bridge.bridge-nf-call-iptables in /etc/sysctl.d/99-kubernetes-cri.conf
+      lineinfile:
+        path: /etc/sysctl.d/99-kubernetes-cri.conf
+        line: net.bridge.bridge-nf-call-iptables = 1
+        create: yes
+
+    - name: set net.ipv4.ip_forward in /etc/sysctl.d/99-kubernetes-cri.conf
+      lineinfile:
+        path: /etc/sysctl.d/99-kubernetes-cri.conf
+        line: net.ipv4.ip_forward = 1
+        create: yes
+
+    - name: set net.bridge.bridge-nf-call-ip6tables in /etc/sysctl.d/99-kubernetes-cri.conf
+      lineinfile:
+        path: /etc/sysctl.d/99-kubernetes-cri.conf
+        line: net.bridge.bridge-nf-call-ip6tables = 1
+        create: yes
+
+    - name: modprobe overlay
+      shell: modprobe overlay
+
+    - name: modprobe br_netfilter
+      shell: modprobe br_netfilter
+      
+    - name: sysctl --system
+      shell: sysctl --system
+
+    - name: swapoff -a
+      shell: swapoff -a
+
+    - name: clear iptables if /etc/ufw exists
+      shell: "[ -d /etc/ufw ] && iptables -F && iptables -X && rm -rf /etc/ufw || exit 0"
+
+    - name: remove swap from fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+
+    - name: set ETCDCTL_API in /root/.bashrc
+      lineinfile:
+        path: /root/.bashrc
+        line: export ETCDCTL_API=3
+        create: yes
+
+    - name: set ETCDCTL_CACERT in /root/.bashrc
+      lineinfile:
+        path: /root/.bashrc
+        line: export ETCDCTL_CACERT=/etc/kubernetes/pki/etcd/ca.crt
+        create: yes
+
+    - name: set ETCDCTL_CERT in /root/.bashrc
+      lineinfile:
+        path: /root/.bashrc
+        line: export ETCDCTL_CERT=/etc/kubernetes/pki/etcd/server.crt
+        create: yes
+
+    - name: set ETCDCTL_KEY in /root/.bashrc
+      lineinfile:
+        path: /root/.bashrc
+        line: export ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key
+        create: yes
+
+
+    # This section installs and syncs a CA certificate and key across all nodes
+    # to be used by the kubernetes cluster.
+    #
+    # Doing this allows us to create certificates for private registries that can
+    # be used from inside the cluster.
+    # -----------------------------------------------------------------------------
+    - name: test nodes for shared ca cert and key
+      shell: "[ -f /etc/ssl/k8s/cluster-shared-ca.crt ] && [ -f /etc/ssl/k8s/cluster-shared-ca.key ] && echo success || echo fail"
+      register: ca_cert_result
+      when: setup_internal_ca == true
+
+    - name: remember nodes with shared ca cert and key in variable
+      set_fact:
+        has_ca_cert: "{{ inventory_hostname }}"
+      when: >
+        setup_internal_ca == true
+        and
+        ca_cert_result.stdout == "success"
+
+    - name: ensure directory /etc/ssl/k8s exists
+      file:
+        path: /etc/ssl/k8s
+        state: directory
+      when: setup_internal_ca == true
+
+    - name: generate ca cert and key
+      shell: openssl req -subj '/C=K8/ST=Cluster/L=Pod/O=Internal/OU=Pipelines/CN=*.cluster.local' -nodes -x509 -newkey rsa:4096 -keyout /etc/ssl/k8s/cluster-shared-ca.key -out /etc/ssl/k8s/cluster-shared-ca.crt -days 1825
+      when: 0 == (ansible_play_hosts_all | map('extract', hostvars, 'has_ca_cert') | select('defined') | length) and inventory_hostname == (ansible_play_hosts_all | first)
+
+    - name: remember node that ca cert and key was generated on
+      set_fact:
+        has_ca_cert: "{{ ansible_play_hosts_all | first }}"
+      when: >
+        setup_internal_ca == true
+        and
+        0 == (ansible_play_hosts_all | map('extract', hostvars, 'has_ca_cert') | select('defined') | length) and inventory_hostname == (ansible_play_hosts_all | first)
+
+    - name: pull down /etc/ssl/k8s
+      synchronize:
+        src: /etc/ssl/k8s/
+        dest: ./tmp-etc-ssl-k8s
+        mode: pull
+      when: >
+        setup_internal_ca == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars, 'has_ca_cert') | select('defined') | first)
+
+    - name: push /etc/ssl/k8s
+      synchronize:
+        src: ./tmp-etc-ssl-k8s/
+        dest: /etc/ssl/k8s
+        mode: push
+      when: >
+        setup_internal_ca == true
+        and
+        inventory_hostname not in (ansible_play_hosts_all | map('extract', hostvars, 'has_ca_cert') | select('defined'))
+    
+    - name: remove temp directory ./tmp-etc-ssl-k8s
+      local_action: file path=./tmp-etc-ssl-k8s state=absent
+      run_once: yes
+      when: setup_internal_ca == true
+
+    # This section installs the container engine
+    # -----------------------------------------------------------------------------
+    - name: install container engine - containerd
+      apt:
+        state: latest
+        pkg:
+        - containerd
+
+    - name: ensure directory /etc/containerd exists
+      file:
+        path: /etc/containerd
+        state: directory
+
+    - name: containerd config default > /etc/containerd/config.toml
+      shell: containerd config default > /etc/containerd/config.toml
+
+    - name: enable service containerd
+      ansible.builtin.service:
+        name: containerd
+        state: started
+        enabled: yes
+
+    # This section installs the tools for kubernetes
+    # -----------------------------------------------------------------------------
+
+    - name: apt-mark unhold kubelet kubeadm kubectl
+      shell: apt-mark unhold kubelet kubeadm kubectl
+
+    # apt-get update && apt-get install -y kubelet=1.20.1-00 kubeadm=1.20.1-00 kubectl=1.20.1-00
+    - name: install kubernetes dependencies
+      apt:
+        state: present
+        pkg:
+        - kubelet={{ kubernetes_version }}
+        - kubeadm={{ kubernetes_version }}
+        - kubectl={{ kubernetes_version }}
+
+    - name: apt-mark hold kubelet kubeadm kubectl
+      shell: apt-mark hold kubelet kubeadm kubectl
+
+    # We pull the images so we have a rough idea where things might be slow
+    - name: pull kubernetes container images
+      shell: kubeadm config images pull
+
+    # This section does Kubernetes setup
+    # -----------------------------------------------------------------------------
+    # Identify leader nodes
+    - name: find leader nodes that have /etc/kubernetes/admin.conf
+      shell: "[ -f /etc/kubernetes/admin.conf ] && echo success || echo fail"
+      register: leader_search_result
+      when: >
+        leader == true
+
+    - name: store leader nodes
+      set_fact:
+        is_leader: "{{ inventory_hostname }}"
+      when: >
+        leader == true
+        and
+        leader_search_result.stdout == "success"
+
+    # If no node has kubernetes installed, install it on one
+    - name: initialize genesis node
+      shell: kubeadm init --apiserver-advertise-address {{ private_ip }} --pod-network-cidr 192.168.0.0/16 --control-plane-endpoint {{ public_ip }}:6443 --upload-certs
+      when: >
+        0 == (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined') | length)
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: make /root/.kube
+      file:
+        path: /root/.kube
+        state: directory
+      when: >
+        0 == (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined') | length)
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: copy /etc/kubernetes/admin.conf to /root/.kube/config
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+      when: >
+        0 == (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined') | length)
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: install calico cni on genesis node
+      # Sourced from: https://docs.projectcalico.org/getting-started/kubernetes/self-managed-onprem/onpremises
+      shell: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+      when: >
+        0 == (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined') | length)
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: wait for kube-system ready
+      shell: kubectl -n kube-system wait --for=condition=ready --all pods --timeout=5m
+      when: >
+        0 == (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined') | length)
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: remember genesis node
+      set_fact:
+        is_leader: "{{ ansible_play_hosts_all | first }}"
+      when: >
+        0 == (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined') | length)
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    # Get join commands from a node with kubernetes installed
+    - name: prepare to get leader join command
+      shell: kubeadm init phase upload-certs --upload-certs | tail -n1
+      register: leader_join_key
+      when: >
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined') | first)
+
+    - name: get leader join command
+      shell: kubeadm token create --print-join-command --certificate-key {{ leader_join_key.stdout }} | sed -e 's/{{ public_ip }}/{{ private_ip }}/g'
+      register: leader_join_command
+      when: >
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined') | first)
+
+    - name: get worker join command
+      shell: kubeadm token create --print-join-command | sed -e 's/{{ public_ip }}/{{ private_ip }}/g'
+      register: worker_join_command
+      when: >
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined') | first)
+
+    # Join leaders that aren't in the cluster
+    - name: join leaders to cluster
+      shell: "{{ ansible_play_hosts_all | map('extract', hostvars, 'leader_join_command') | select('defined') | map(attribute='stdout') | first }} --apiserver-advertise-address {{ private_ip }}"
+      when: >
+        leader == true
+        and
+        inventory_hostname not in (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined'))
+
+    # Configure leaders so that kubectl works
+    - name: make /root/.kube
+      file:
+        path: /root/.kube
+        state: directory
+      when: >
+        leader == true
+        and
+        inventory_hostname not in (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined'))
+
+    - name: copy /etc/kubernetes/admin.conf to /root/.kube/config
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+      when: >
+        leader == true
+        and
+        inventory_hostname not in (ansible_play_hosts_all | map('extract', hostvars, 'is_leader') | select('defined'))
+
+    # Identify worker nodes
+    - name: find worker nodes that have /etc/kubernetes/kubelet.conf
+      shell: "[ -f /etc/kubernetes/kubelet.conf ] && echo success || echo fail"
+      register: worker_search_result
+      when: >
+        leader == false
+
+    - name: store worker nodes
+      set_fact:
+        is_worker: "{{ inventory_hostname }}"
+      when: >
+        leader == false
+        and
+        worker_search_result.stdout == "success"
+
+
+    # Join workers that aren't in the cluster
+    - name: join workers to cluster
+      shell: "{{ ansible_play_hosts_all | map('extract', hostvars, 'worker_join_command') | select('defined') | map(attribute='stdout') | first }}"
+      when: >
+        leader == false
+        and
+        inventory_hostname not in (ansible_play_hosts_all | map('extract', hostvars, 'is_worker') | select('defined'))
+
+
+    - name: wait for nodes to be ready
+      shell: kubectl wait nodes {{ ansible_play_hosts_all | join(' ') }} --for condition=ready --timeout=5m
+      when: >
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    # Make it so we can use the cluster
+    - name: remove node taints
+      shell: kubectl taint nodes {{ ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | join(' ') }} node-role.kubernetes.io/master-; exit 0
+      when: >
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: label worker nodes
+      shell: kubectl label nodes {{ ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", false) | map(attribute="inventory_hostname") | join(' ') }} node-role.kubernetes.io/worker=worker; exit 0
+      when: >
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+
+    # This section installs additional stuff to the cluster.
+    # -----------------------------------------------------------------------------
+
+    # Install longhorn.io CSI
+    - name: apply longhorn.io v1.1.1
+      shell: kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.1.1/deploy/longhorn.yaml
+      when: >
+        apply_longhorn == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: wait for longhorn-system ready
+      shell: kubectl -n longhorn-system wait --for=condition=ready --all pods --timeout=10m
+      when: >
+        apply_longhorn == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: set longhorn to default storage class
+      shell: "kubectl patch storageclass longhorn -p '{\"metadata\": {\"annotations\":{\"storageclass.kubernetes.io/is-default-class\":\"true\"}}}'"
+      when: >
+        apply_longhorn == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    # Install traefik
+    - name: create traefik-system namespace
+      shell: kubectl create ns traefik-system || exit 0
+      when: >
+        apply_traefik == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: apply latest traefik
+      shell: kubectl apply -f https://raw.githubusercontent.com/scalabledelivery/kubernetes/master/deploy/traefik-v2/traefik.yaml
+      when: >
+        apply_traefik == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: install svc-lb for traefik
+      shell: kubectl apply -f https://raw.githubusercontent.com/scalabledelivery/kubernetes/master/deploy/traefik-v2/svclb.yaml
+      when: >
+        apply_traefik == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: wait for traefik ready
+      shell: kubectl -n traefik-system wait --for=condition=ready --all pods --timeout=10m
+      when: >
+        apply_traefik == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    # Install metrics server
+    - name: apply latest metrics server with --kubelet-insecure-tls flag patched
+      # Sourced from: https://github.com/kubernetes-sigs/metrics-server/releases
+      shell: "curl -Ls https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml | awk '1;/- args:/{ print \"        - --kubelet-insecure-tls\"}' | kubectl apply -f -"
+      when: >
+        apply_metrics_server == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    # Install resolve host patcher for DNS fix
+    - name: apply latest resolve-host-patcher
+      shell: kubectl apply -f https://raw.githubusercontent.com/scalabledelivery/resolve-host-patcher/main/daemonset.yaml
+      when: >
+        apply_resolve_host_patcher == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    # Install argo cd
+    - name: create argo cd namespace
+      shell: kubectl create namespace argocd || exit 0
+      when: >
+        apply_argo_cd == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: install argo cd
+      shell: kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+      when: >
+        apply_argo_cd == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: wait for argo cd ready
+      shell: kubectl -n argocd wait --for=condition=ready --all pods --timeout=10m
+      when: >
+        apply_argo_cd == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    # Install argo workflows
+    - name: create argo namespace
+      shell: kubectl create namespace argo || exit 0
+      when: >
+        apply_argo_workflows == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: install argo workflows
+      shell: kubectl -n argo apply -f https://raw.githubusercontent.com/argoproj/argo-workflows/stable/manifests/install.yaml
+      when: >
+        apply_argo_workflows == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: wait for argo workflows ready
+      shell: kubectl -n argo wait --for=condition=ready --all pods --timeout=10m
+      when: >
+        apply_argo_workflows == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    # Install argo events
+    - name: create argo events namespace
+      shell: kubectl create namespace argo-events || exit 0
+      when: >
+        apply_argo_events == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: install argo events
+      shell: >
+        kubectl apply -f https://raw.githubusercontent.com/argoproj/argo-events/stable/manifests/install.yaml &&
+        kubectl apply -f https://raw.githubusercontent.com/argoproj/argo-events/stable/manifests/install-validating-webhook.yaml &&
+        kubectl apply -n argo-events -f https://raw.githubusercontent.com/argoproj/argo-events/stable/examples/eventbus/native.yaml
+      when: >
+        apply_argo_events == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
+
+    - name: wait for argo events ready
+      shell: kubectl -n argo-events wait --for=condition=ready --all pods --timeout=10m
+      when: >
+        apply_argo_events == true
+        and
+        inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
