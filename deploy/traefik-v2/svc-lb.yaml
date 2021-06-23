@@ -13,7 +13,7 @@ data:
           exit 1
       fi
 
-      apk add -U bind-tools
+      apk add -U bind-tools iptables
 
       DEST_IP=$(echo "${DEST_IP}" | grep -E -o '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' || dig +short "${DEST_IP}")
       
@@ -63,7 +63,7 @@ spec:
               value: "80"
             - name: DEST_IP
               value: traefik-ingress-controller-http-service.traefik-system.svc.cluster.local
-          image: rancher/klipper-lb:v0.2.0
+          image: alpine:3
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 80
@@ -92,7 +92,7 @@ spec:
               value: "443"
             - name: DEST_IP
               value: traefik-ingress-controller-http-service.traefik-system.svc.cluster.local
-          image: rancher/klipper-lb:v0.2.0
+          image: alpine:3
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 443
