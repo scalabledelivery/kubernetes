@@ -161,3 +161,6 @@ $ echo $(kubectl -n argo get secrets argocd-initial-admin-secret -o jsonpath='{.
 
 ## Argo Events
 You can find some examples [here](https://github.com/argoproj/argo-events/tree/stable/examples). You may want to setup a webhook to trigger workflows.
+
+# Catalog
+There are some useful manifests held in `catalog/` that aide with building scalable application.
