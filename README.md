@@ -163,4 +163,4 @@ $ echo $(kubectl -n argo get secrets argocd-initial-admin-secret -o jsonpath='{.
 You can find some examples [here](https://github.com/argoproj/argo-events/tree/stable/examples). You may want to setup a webhook to trigger workflows.
 
 # Catalog
-There are some useful manifests held in `catalog/` that aide with building scalable application.
+There are some useful manifests held in `catalog/` that aide with building scalable application. Ideally if you're using `Argo CD`, you should take the manifests you want and copy them to your own repo that you are using as a source of truth. That way you can change replica values in the repo.
