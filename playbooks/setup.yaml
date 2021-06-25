@@ -40,10 +40,10 @@
 
     - name: Check OS memory
       fail:
-        msg: "2000mb of memory required, found only {{ ansible_memtotal_mb }}mb."
+        msg: "1700mb of memory required, found only {{ ansible_memtotal_mb }}mb."
       any_errors_fatal: true
       when: >
-        ansible_memtotal_mb < 2000
+        ansible_memtotal_mb < 1700
 
 
     - name: add kubernetes repo gpg key # curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
