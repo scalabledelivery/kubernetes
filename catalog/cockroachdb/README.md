@@ -7,8 +7,7 @@ A distributed SQL database that scales horizontally. Documentation can be found 
 # Deploying
 ```text
 $ kubectl create ns cockroachdb
-$ kubectl create secret generic cockroach-init-sync --from-literal=shared-secret=snakeoil
-$ kubectl -n cockroachdb apply -f catalog/cockroachdb/deploy.yaml
+$ kubectl -n cockroachdb create secret generic cockroach-init-sync --from-literal=shared-secret=snakeoil
 $ kubectl -n cockroachdb apply -f https://raw.githubusercontent.com/scalabledelivery/kubernetes/master/catalog/cockroachdb/deploy.yaml
 $ kubectl -n cockroachdb rollout status statefulset/cockroachdb --watch --timeout=10m
 ```
