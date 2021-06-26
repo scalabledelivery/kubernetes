@@ -1,0 +1,221 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mariadb
+  labels:
+    app: mariadb
+data:
+  server.cnf: |
+    # this is only for the mysqld standalone daemon
+    [mysqld]
+
+    # Galera-related settings
+    [galera]
+    user = mysql
+    wsrep_on=ON
+    wsrep_provider=/usr/lib64/galera-4/libgalera_smm.so
+    wsrep_sst_method = rsync
+    wsrep_provider_options="evs.auto_evict=1"
+    #wsrep_cluster_address=
+    binlog_format=row
+    default_storage_engine=InnoDB
+    innodb_autoinc_lock_mode=2
+
+    # Allow server to accept connections on all interfaces.
+    bind-address=0.0.0.0
+
+    # Optional setting
+    #wsrep_slave_threads=1
+    #innodb_flush_log_at_trx_commit=0
+
+    # 10.5 settings
+    [mariadb-10.5]
+  server-init.cnf: |
+    # 10.5 settings
+    [mariadb-10.5]
+    user = mysql
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb-public
+  labels:
+    app: mariadb
+spec:
+  ports:
+    - port: 3306
+      name: mysql
+    - port: 4567
+      name: galera-repli
+    - port: 4568
+      name: galera-ixfer
+    - port: 4444
+      name: galera-sxfer
+  selector:
+    app: mariadb
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  labels:
+    app: mariadb
+spec:
+  ports:
+    - port: 3306
+      name: mysql
+      protocol: TCP
+    - port: 4567
+      name: galera-repli
+      protocol: TCP
+    - port: 4568
+      name: galera-ixfer
+      protocol: TCP
+    - port: 4444
+      name: galera-sxfer
+      protocol: TCP
+  publishNotReadyAddresses: true
+  clusterIP: None
+  selector:
+    app: mariadb
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mariadb
+spec:
+  serviceName: "mariadb"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mariadb
+  template:
+    metadata:
+      labels:
+        app: mariadb
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                       - mariadb
+                topologyKey: kubernetes.io/hostname
+
+      initContainers:
+        - name: mariadb-init
+          image: ghcr.io/scalabledelivery/mariadb:10.5
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: mariadb-data
+              mountPath: /var/lib/mysql
+            - name: config-map
+              mountPath: /etc/my.cnf.d/server.cnf
+              subPath: server-init.cnf
+          command:
+            - "/bin/bash"
+            - "-x"
+            - "-c"
+            - |
+              #!/bin/bash
+              
+              if [ ! -f "/var/lib/mysql/mysql.db" ]; then
+                mysql_install_db
+              fi
+
+      volumes:
+        - name: mariadb-data
+          persistentVolumeClaim:
+            claimName: mariadb-data
+
+      containers:
+        - name: mariadb
+          image: ghcr.io/scalabledelivery/mariadb:10.5
+          imagePullPolicy: IfNotPresent
+          #resources:
+          #  requests:
+          #    memory: "200Mi"
+          ports:
+            - containerPort: 3306
+              name: mysql
+            - containerPort: 4567
+              name: galera-repli
+            - containerPort: 4568
+              name: galera-ixfer
+            - containerPort: 4444
+              name: galera-sxfer
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -ex
+                - -c
+                - |
+                  mysql -N -e 'SHOW GLOBAL STATUS LIKE "wsrep_cluster_size";'
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 10
+          volumeMounts:
+            - name: mariadb-data
+              mountPath: /var/lib/mysql
+            - name: config-map
+              mountPath: /etc/my.cnf.d/server.cnf
+              subPath: server.cnf
+
+          env:
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GALERA_CLUSTER_NODES
+              value: "mariadb-0.mariadb,mariadb-1.mariadb,mariadb-2.mariadb"
+          command:
+            - "/bin/bash"
+            - "-x"
+            - "-c"
+            - |
+              #!/bin/bash
+
+              # we have specific requirements at the cluster club
+              if ! [[ `hostname` =~ ([A-Za-z0-9_-]+)-([0-9]+)$ ]]; then
+                  echo "container hostnames must contain ordinals"
+                  exit 1
+              fi
+
+              # get the ordinal and unnumbered_hostname
+              export ordinal=${BASH_REMATCH[2]}
+              export unnumbered_hostname=${BASH_REMATCH[1]}
+
+              # create a new cluster or connect to existing cluster
+              # we assume persistent storage is in use at /var/lib/mysql/
+              if [[ ${ordinal} -eq 0 ]] && [ ! -f "/var/lib/mysql/grastate.dat" ]; then
+                  mysqld --wsrep-new-cluster --wsrep-cluster-name=stateful-set-cluster --wsrep-cluster-address=gcomm://${GALERA_CLUSTER_NODES}
+              else
+                  mysqld --wsrep-cluster-name=stateful-set-cluster --wsrep-cluster-address=gcomm://${GALERA_CLUSTER_NODES}
+              fi
+      volumes:
+        - name: mariadb-data
+          persistentVolumeClaim:
+            claimName: mariadb-data
+        - name: config-map
+          configMap:
+            name: mariadb
+
+  updateStrategy:
+    type: RollingUpdate
+  volumeClaimTemplates:
+    - metadata:
+        name: mariadb-data
+      spec:
+        accessModes:
+          - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: 10Gi
