@@ -1,7 +1,7 @@
 # Cockroach DB
 A distributed SQL database that scales horizontally. Documentation can be found [here](https://www.cockroachlabs.com/docs/).
 
-**NOTE:** Be sure to check out the licensing model [here](https://www.cockroachlabs.com/docs/stable/licensing-faqs.html). Core versions of Cockroach DB become open source after 3 years. The core version also lacks 
+**NOTE:** Be sure to check out the licensing model [here](https://www.cockroachlabs.com/docs/stable/licensing-faqs.html). Core versions of Cockroach DB become open source after 3 years. The core version also lacks some functionality.
 
 
 # Deploying
