@@ -4,7 +4,6 @@ This statefulset will deploy a multi-master Maria DB 10.5 cluster, with galera.
 # Deploying
 ```text
 $ kubectl create ns mariadb
-$ kubectl -n mariadb apply -f catalog/mariadb-10.5-galera/deploy.yaml
 $ kubectl -n mariadb apply -f https://raw.githubusercontent.com/scalabledelivery/kubernetes/master/catalog/mariadb-10.5-galera/deploy.yaml
 $ kubectl -n mariadb rollout status statefulset/mariadb --watch --timeout=10m
 ```
