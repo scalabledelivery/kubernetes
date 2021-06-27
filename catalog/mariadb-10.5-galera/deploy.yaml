@@ -139,9 +139,10 @@ spec:
         - name: mariadb
           image: ghcr.io/scalabledelivery/mariadb:10.5
           imagePullPolicy: IfNotPresent
-          #resources:
-          #  requests:
-          #    memory: "200Mi"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "300Mi"
           ports:
             - containerPort: 3306
               name: mysql

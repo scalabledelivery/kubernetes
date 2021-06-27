@@ -147,7 +147,8 @@ spec:
           imagePullPolicy: IfNotPresent
           resources:
             requests:
-              memory: "200Mi"
+              cpu: "500m"
+              memory: "300Mi"
           ports:
             - containerPort: 26257
               name: grpc
