@@ -59,7 +59,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       initContainers:
         - name: init-sync-download
-          image: ghcr.io/scalabledelivery/init-sync:latest
+          image: ghcr.io/scalabledelivery/init-sync:v1.0
           imagePullPolicy: IfNotPresent
           env:
             - name: ACTION
@@ -219,7 +219,7 @@ spec:
                     # Nice thing about this command is that it will just retry until it works
                     /cockroach/cockroach init --certs-dir=/cockroach/certs && touch /cockroach/certs/.cluster_initialized
         - name: init-sync-daemon
-          image: ghcr.io/scalabledelivery/init-sync:latest
+          image: ghcr.io/scalabledelivery/init-sync:v1.0
           imagePullPolicy: IfNotPresent
           env:
             - name: ACTION
