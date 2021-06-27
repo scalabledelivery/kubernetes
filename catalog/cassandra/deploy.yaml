@@ -29,6 +29,19 @@ spec:
       labels:
         app: cassandra
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                       - cassandra
+                topologyKey: kubernetes.io/hostname
+
       terminationGracePeriodSeconds: 1800
       containers:
       - name: cassandra
