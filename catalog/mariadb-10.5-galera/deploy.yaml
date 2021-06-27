@@ -1,5 +1,24 @@
 ---
 apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  labels:
+    app: mariadb
+spec:
+  ports:
+    - port: 3306
+      name: mysql
+    - port: 4567
+      name: galera-repli
+    - port: 4568
+      name: galera-ixfer
+    - port: 4444
+      name: galera-sxfer
+  selector:
+    app: mariadb
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mariadb
@@ -35,51 +54,6 @@ data:
     # 10.5 settings
     [mariadb-10.5]
     user = mysql
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mariadb-public
-  labels:
-    app: mariadb
-spec:
-  ports:
-    - port: 3306
-      name: mysql
-    - port: 4567
-      name: galera-repli
-    - port: 4568
-      name: galera-ixfer
-    - port: 4444
-      name: galera-sxfer
-  selector:
-    app: mariadb
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mariadb
-  labels:
-    app: mariadb
-spec:
-  ports:
-    - port: 3306
-      name: mysql
-      protocol: TCP
-    - port: 4567
-      name: galera-repli
-      protocol: TCP
-    - port: 4568
-      name: galera-ixfer
-      protocol: TCP
-    - port: 4444
-      name: galera-sxfer
-      protocol: TCP
-  publishNotReadyAddresses: true
-  clusterIP: None
-  selector:
-    app: mariadb
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -175,28 +149,47 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            - name: GALERA_CLUSTER_NODES
-              value: "mariadb-0.mariadb,mariadb-1.mariadb,mariadb-2.mariadb"
+            # service name pods will be served through
+            # this is used to join the pod to the cluster
+            - name: SERVICE_NAME
+              value: mariadb
+            # the ordinals of the nodes that every node
+            # will contact when it comes online
+            - name: CLUSTER_JOIN_ORDINALS
+              value: 0 1 2
           command:
             - "/bin/bash"
             - "-x"
             - "-c"
             - |
               #!/bin/bash
+              
+              if [ "${SERVICE_NAME}" == "" ]; then
+                echo "SERVICE_NAME must be defined"
+                exit 1
+              fi
+              
+              if [ "${CLUSTER_JOIN_ORDINALS}" == "" ]; then
+                echo "CLUSTER_JOIN_ORDINALS must be defined"
+                exit 1
+              fi
 
-              # we have specific requirements at the cluster club
               if ! [[ `hostname` =~ ([A-Za-z0-9_-]+)-([0-9]+)$ ]]; then
                   echo "container hostnames must contain ordinals"
                   exit 1
               fi
+              HOSTNAME_ORDINAL=${BASH_REMATCH[2]}
+              HOSTNAME_BASE=${BASH_REMATCH[1]}
 
-              # get the ordinal and unnumbered_hostname
-              export ordinal=${BASH_REMATCH[2]}
-              export unnumbered_hostname=${BASH_REMATCH[1]}
+              GALERA_CLUSTER_NODES=""
+              for ordinal in ${CLUSTER_JOIN_ORDINALS}; do
+                GALERA_CLUSTER_NODES="${GALERA_CLUSTER_NODES}${HOSTNAME_BASE}-${ordinal}.${SERVICE_NAME},"
+              done
+              GALERA_CLUSTER_NODES="${GALERA_CLUSTER_NODES%,}"
 
               # create a new cluster or connect to existing cluster
               # we assume persistent storage is in use at /var/lib/mysql/
-              if [[ ${ordinal} -eq 0 ]] && [ ! -f "/var/lib/mysql/grastate.dat" ]; then
+              if [[ ${HOSTNAME_ORDINAL} -eq 0 ]] && [ ! -f "/var/lib/mysql/grastate.dat" ]; then
                   mysqld --wsrep-new-cluster --wsrep-cluster-name=stateful-set-cluster --wsrep-cluster-address=gcomm://${GALERA_CLUSTER_NODES}
               else
                   mysqld --wsrep-cluster-name=stateful-set-cluster --wsrep-cluster-address=gcomm://${GALERA_CLUSTER_NODES}

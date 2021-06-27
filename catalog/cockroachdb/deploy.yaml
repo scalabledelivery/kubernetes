@@ -3,31 +3,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: cockroachdb-public
-  labels:
-    app: cockroachdb
-spec:
-  ports:
-    - port: 26257
-      targetPort: 26257
-      name: grpc
-    - port: 8080
-      targetPort: 8080
-      name: http
-  selector:
-    app: cockroachdb
----
-apiVersion: v1
-kind: Service
-metadata:
   name: cockroachdb
   labels:
     app: cockroachdb
-  annotations:
-    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
-    prometheus.io/scrape: "true"
-    prometheus.io/path: "_status/vars"
-    prometheus.io/port: "8080"
 spec:
   ports:
     - port: 26257
@@ -36,8 +14,6 @@ spec:
     - port: 8080
       targetPort: 8080
       name: http
-  publishNotReadyAddresses: true
-  clusterIP: None
   selector:
     app: cockroachdb
 ---
@@ -83,7 +59,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       initContainers:
         - name: init-sync-download
-          image: ghcr.io/scalabledelivery/init-sync:v1.0
+          image: ghcr.io/scalabledelivery/init-sync:latest
           imagePullPolicy: IfNotPresent
           env:
             - name: ACTION
@@ -108,6 +84,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # Space separated list of valid service names
+            # This is neccessary for the certificate generation
+            - name: SERVICE_NAMES
+              value: cockroachdb
+            - name: CLUSTER_JOIN_ORDINALS
+              value: 0 1 2
           volumeMounts:
             - name: cockroach-data
               mountPath: /cockroach/cockroach-data
@@ -118,14 +100,36 @@ spec:
             - "-c"
             - |
               set -ex
-              # Do we have an ordinal?
-              [[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+              if [ "${SERVICE_NAMES}" == "" ]; then
+                echo "SERVICE_NAMES must be defined"
+                exit 1
+              fi
+
+              if ! [[ `hostname` =~ ([A-Za-z0-9_-]+)-([0-9]+)$ ]]; then
+                  echo "container hostnames must contain ordinals"
+                  exit 1
+              fi
               
-              # Get the ordinal
-              ordinal=${BASH_REMATCH[1]}
+              HOSTNAME_ORDINAL=${BASH_REMATCH[2]}
+              HOSTNAME_BASE=${BASH_REMATCH[1]}
               
               # If we're host 0 in the statefulset, generate certs.
-              if [[ $ordinal -eq 0 ]]; then
+              if [[ $HOSTNAME_ORDINAL -eq 0 ]]; then
+                # Store the service names
+                if [ ! -f /cockroach/certs/service_names.txt ]; then
+
+                  # Generate the join pool
+                  PARSED_CLUSTER_INIT_POOL=""
+                  for ordinal in ${CLUSTER_JOIN_ORDINALS}; do
+                    for svc_name in ${SERVICE_NAMES}; do
+                      PARSED_CLUSTER_INIT_POOL="${PARSED_CLUSTER_INIT_POOL}${HOSTNAME_BASE}-${ordinal}.${svc_name},"
+                    done
+                  done
+                  PARSED_CLUSTER_INIT_POOL="${PARSED_CLUSTER_INIT_POOL%,}"
+
+                  echo ${PARSED_CLUSTER_INIT_POOL} > /cockroach/certs/join_pool.txt
+                fi
+
                 # Generate if ca.crt does not exist
                 if [ ! -f /cockroach/certs/ca.crt ]; then
                   cockroach cert create-ca --certs-dir=/cockroach/certs --ca-key=/cockroach/certs/ca.key
@@ -138,7 +142,16 @@ spec:
 
                 # Generate if node.crt does not exist
                 if [ ! -f /cockroach/certs/node.crt ]; then
-                  cockroach cert create-node --certs-dir=/cockroach/certs --ca-key=/cockroach/certs/ca.key localhost 127.0.0.1 cockroachdb-public cockroachdb-public.${K8S_NAMESPACE} cockroachdb-public.${K8S_NAMESPACE}.svc.cluster.local *.cockroachdb *.cockroachdb.${K8S_NAMESPACE} *.cockroachdb.${K8S_NAMESPACE}.svc.cluster.local
+                  CERTIFICATE_NAMES=""
+                  for svc_name in ${SERVICE_NAMES}; do
+                    CERTIFICATE_NAMES="${CERTIFICATE_NAMES} ${svc_name}"
+                    CERTIFICATE_NAMES="${CERTIFICATE_NAMES} ${svc_name}.${K8S_NAMESPACE}"
+                    CERTIFICATE_NAMES="${CERTIFICATE_NAMES} ${svc_name}.${K8S_NAMESPACE}.svc.cluster.local"
+                    CERTIFICATE_NAMES="${CERTIFICATE_NAMES} *.${svc_name}"
+                    CERTIFICATE_NAMES="${CERTIFICATE_NAMES} *.${svc_name}.${K8S_NAMESPACE}"
+                    CERTIFICATE_NAMES="${CERTIFICATE_NAMES} *.${svc_name}.${K8S_NAMESPACE}.svc.cluster.local"
+                  done
+                  cockroach cert create-node --certs-dir=/cockroach/certs --ca-key=/cockroach/certs/ca.key localhost 127.0.0.1 ${CERTIFICATE_NAMES}
                 fi
               fi
       containers:
@@ -181,6 +194,18 @@ spec:
                   fieldPath: metadata.namespace
             - name: COCKROACH_CHANNEL
               value: kubernetes-secure
+          command:
+            - "/bin/bash"
+            - "-c"
+            - |
+              #!/bin/bash
+
+              /cockroach/cockroach start --logtostderr --certs-dir /cockroach/certs --advertise-host $(hostname -f) --http-addr 0.0.0.0 --join $(cat /cockroach/certs/join_pool.txt)
+
+              # Note: You may want to consider adding this flags for tuning purposes
+              #--cache $(expr $MEMORY_LIMIT_MIB / 4)MiB
+              #--max-sql-memory $(expr $MEMORY_LIMIT_MIB / 4)MiB
+              
           lifecycle:
             postStart:
               exec:
@@ -193,20 +218,8 @@ spec:
                     # Initialize the cluster if we don't have the marker
                     # Nice thing about this command is that it will just retry until it works
                     /cockroach/cockroach init --certs-dir=/cockroach/certs && touch /cockroach/certs/.cluster_initialized
-          command:
-            - "/bin/bash"
-            - "-ecx"
-            - /cockroach/cockroach
-              start
-              --logtostderr
-              --certs-dir /cockroach/certs
-              --advertise-host $(hostname -f)
-              --http-addr 0.0.0.0
-              --join cockroachdb-0.cockroachdb,cockroachdb-1.cockroachdb,cockroachdb-2.cockroachdb
-              #--cache $(expr $MEMORY_LIMIT_MIB / 4)MiB
-              #--max-sql-memory $(expr $MEMORY_LIMIT_MIB / 4)MiB
         - name: init-sync-daemon
-          image: ghcr.io/scalabledelivery/init-sync:v1.0
+          image: ghcr.io/scalabledelivery/init-sync:latest
           imagePullPolicy: IfNotPresent
           env:
             - name: ACTION
