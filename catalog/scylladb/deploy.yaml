@@ -1,0 +1,166 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scylladb
+  labels:
+    app: scylladb
+spec:
+  ports:
+  - port: 9042   # CQL (native_transport_port)
+    name: cql
+  - port: 9142   # SSL CQL (secure client to node)
+    name: tls-cql
+  - port: 7000   # Inter-node communication (RPC)
+    name: intra-node
+  - port: 7001   # SSL inter-node communication (RPC)
+    name: tls-intra-node
+  - port: 7199   # JMX management
+    name: jmx
+  - port: 10000   # Scylla REST API
+    name: rest-api
+  - port: 9180   # Prometheus API
+    name: prometheus-api
+  - port: 9100   # node_exporter (Optionally)
+    name: node-exporter
+  - port: 9160   # Scylla client port (Thrift)
+    name: thrift
+  - port: 19042   # Native shard-aware transport port
+    name: nsat
+  - port: 19142   # Native shard-aware transport port (ssl)
+    name: tls-nsat
+  selector:
+    app: scylladb
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: scylladb
+  labels:
+    app: scylladb
+spec:
+  serviceName: scylladb
+  replicas: 3
+  selector:
+    matchLabels:
+      app: scylladb
+  template:
+    metadata:
+      labels:
+        app: scylladb
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                       - scylladb
+                topologyKey: kubernetes.io/hostname
+
+      terminationGracePeriodSeconds: 1800
+      containers:
+        - name: scylladb
+          image: scylladb/scylla:4.4.3
+          imagePullPolicy: IfNotPresent
+          ports:
+          - containerPort: 9042   # CQL (native_transport_port)
+            name: cql
+          - containerPort: 9142   # SSL CQL (secure client to node)
+            name: tls-cql
+          - containerPort: 7000   # Inter-node communication (RPC)
+            name: intra-node
+          - containerPort: 7001   # SSL inter-node communication (RPC)
+            name: tls-intra-node
+          - containerPort: 7199   # JMX management
+            name: jmx
+          - containerPort: 10000   # Scylla REST API
+            name: rest-api
+          - containerPort: 9180   # Prometheus API
+            name: prometheus-api
+          - containerPort: 9100   # node_exporter (Optionally)
+            name: node-exporter
+          - containerPort: 9160   # Scylla client port (Thrift)
+            name: thrift
+          - containerPort: 19042   # Native shard-aware transport port
+            name: nsat
+          - containerPort: 19142   # Native shard-aware transport port (ssl)
+            name: tls-nsat
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 600Mi
+          lifecycle:
+            preStop:
+              exec:
+                command: [ "nodetool", "drain" ]
+          env:
+            - name: K8S_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+            # service name pods will be served through
+            # this is used to join the pod to the cluster
+            - name: SERVICE_NAME
+              value: scylladb
+
+          command:
+            - bash
+            - -c
+            - |
+              if [ "${SERVICE_NAME}" == "" ]; then
+                echo "SERVICE_NAME must be defined"
+                exit 1
+              fi
+              
+              if [ "${K8S_NAMESPACE}" == "" ]; then
+                echo "K8S_NAMESPACE must be defined"
+                exit 1
+              fi
+
+              if [ "${K8S_POD_IP}" == "" ]; then
+                echo "K8S_POD_IP must be defined"
+                exit 1
+              fi
+
+              if ! [[ `hostname` =~ ([A-Za-z0-9_-]+)-([0-9]+)$ ]]; then
+                  echo "container hostnames must contain ordinals"
+                  exit 1
+              fi
+              
+              HOSTNAME_ORDINAL=${BASH_REMATCH[2]}
+              HOSTNAME_BASE=${BASH_REMATCH[1]}
+
+              export SCYLLA_SEEDS="${SCYLLA_SEEDS}"
+              # scylla is literally incapable of starting when any seeds are down
+              /docker-entrypoint.py --seeds "${HOSTNAME_BASE}-0.${SERVICE_NAME}.${K8S_NAMESPACE}.svc.cluster.local"
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -ec
+                - |
+                  nodetool status | grep $K8S_POD_IP | grep -q ^UN
+            initialDelaySeconds: 15
+            timeoutSeconds: 5
+          volumeMounts:
+          - name: scylladb-data
+            mountPath: /scylladb_data
+  volumeClaimTemplates:
+  - metadata:
+      name: scylladb-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
+
