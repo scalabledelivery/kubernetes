@@ -34,7 +34,7 @@ kind: StatefulSet
 metadata:
   name: cockroachdb
 spec:
-  serviceName: "cockroachdb"
+  serviceName: cockroachdb
   replicas: 3
   selector:
     matchLabels:
