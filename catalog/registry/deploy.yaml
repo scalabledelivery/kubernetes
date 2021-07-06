@@ -1,0 +1,95 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+spec:
+  selector:
+    app: registry
+  ports:
+    - protocol: TCP
+      port: 443
+      targetPort: 5000
+---
+# registry.ci.svc.cluster.local
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  labels:
+    app: registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registry
+  template:
+    metadata:
+      labels:
+        app: registry
+    spec:
+      volumes:
+        - name: registry-vol
+          hostPath:
+            path: /var/lib/data/registry
+            type: DirectoryOrCreate
+        - name: cluster-shared-ca-vol
+          hostPath:
+            path: /etc/ssl/k8s
+            type: Directory
+        - name: cert-vol
+          emptyDir: {}
+
+      initContainers:
+
+        # Utility that generates ssl certificate
+        - name: generate-ssl-certificate
+          image: alpine:latest
+          imagePullPolicy: Always
+          env:
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          workingDir: /certs/
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -x -e
+              date -u
+              apk add openssl
+              openssl req -subj '/C=K8/ST=Cluster/L=Pod/O=SnakeOil/OU=SnakeOil/CN=registry.'"${K8S_NAMESPACE}"'.svc.cluster.local' -nodes -newkey rsa:4096 -keyout /certs/registry.key -out snakeoil.csr
+              openssl x509 -req -in snakeoil.csr -CA /etc/ssl/k8s/cluster-shared-ca.crt -CAkey /etc/ssl/k8s/cluster-shared-ca.key -CAcreateserial -out /certs/registry.crt -days 365 -sha256
+          volumeMounts:
+            - name: cert-vol
+              mountPath: /certs/
+            - name: cluster-shared-ca-vol
+              mountPath: /etc/ssl/k8s
+
+      containers:
+        - image: registry:2
+          name: registry
+          imagePullPolicy: IfNotPresent
+          env: # Ref: https://docs.docker.com/registry/configuration/
+            - name:  REGISTRY_HTTP_ADDR
+              value: 0.0.0.0:5000
+            - name:  REGISTRY_HTTP_SECRET
+              value: SNAIK-OIL-SECRET
+            - name: REGISTRY_HTTP_TLS_CERTIFICATE
+              value: "/certs/registry.crt"
+            - name: REGISTRY_HTTP_TLS_KEY
+              value: "/certs/registry.key"
+            - name:  REGISTRY_LOG_LEVEL
+              value: debug
+
+
+          ports:
+            - containerPort: 5000
+
+          volumeMounts:
+            - name: registry-vol
+              mountPath: /var/lib/registry
+            - name: cert-vol
+              mountPath: /certs/
+
