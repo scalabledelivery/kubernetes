@@ -11,9 +11,9 @@
     apply_metrics_server: yes
     apply_longhorn: yes
     apply_traefik: yes
-    apply_argo_workflows: yes
-    apply_argo_cd: yes
-    apply_argo_events: yes
+    apply_argo_workflows: no
+    apply_argo_cd: no
+    apply_argo_events: no
     apply_resolve_host_patcher: yes
 
     # You can retrieve a list of available versions with this one-liner
@@ -45,7 +45,6 @@
       when: >
         ansible_memtotal_mb < 1700
 
-
     - name: add kubernetes repo gpg key # curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
       apt_key:
         url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
@@ -56,18 +55,9 @@
         repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
         state: present
 
-    - name: update apt cache
-      apt:
-        update_cache: yes
-
-    - name: remove ufw
-      apt:
-        state: absent
-        pkg:
-        - ufw
-
     - name: install common tools and dependencies
       apt:
+        update_cache: yes
         state: present
         pkg:
         - open-iscsi
@@ -82,6 +72,12 @@
         - apt-transport-https
         - etcd-client
         - vim
+
+    - name: remove ufw
+      apt:
+        state: absent
+        pkg:
+        - ufw
     
     - name: enable service iscsid
       ansible.builtin.service:
@@ -409,9 +405,8 @@
         and
         inventory_hostname not in (ansible_play_hosts_all | map('extract', hostvars, 'is_worker') | select('defined'))
 
-
     - name: wait for nodes to be ready
-      shell: kubectl wait nodes {{ ansible_play_hosts_all | join(' ') }} --for condition=ready --timeout=5m
+      shell: kubectl wait nodes {% for host in groups['all'] %}{{ hostvars[host]['ansible_hostname'] }} {% endfor %} --for condition=ready --timeout=5m
       when: >
         inventory_hostname == (ansible_play_hosts_all | map('extract', hostvars) | selectattr("leader", "equalto", true) | map(attribute="inventory_hostname") | first)
 

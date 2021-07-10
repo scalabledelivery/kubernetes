@@ -7,6 +7,8 @@ The following gets installed by default:
 * [traefik](https://doc.traefik.io/traefik/) - An open-source Edge Router
 * [klipper-lb](https://github.com/k3s-io/klipper-lb/) - A modified service load balancer that routes port 80 and 443 to traefik
 * [resolve-host-patcher](https://github.com/scalabledelivery/resolve-host-patcher/) - Patches the resolvers on cluster hosts so that `*.cluster.local` will resolve in applied manifest
+
+The following can be installed via variables:
 * [Argo CD](https://github.com/argoproj/argo-cd) - For GitOps deployments
 * [Argo Workflows](https://github.com/argoproj/argo-workflows) - A workflow engine for Kubernetes that can be used for CI
 * [Argo Events](https://github.com/argoproj/argo-events) - Used to trigger workflows
@@ -24,16 +26,13 @@ Setup your inventory file like so.
 all:
   hosts:
     leader-01:
+      ansible_ssh_pipelining: true
       ansible_host: 155.138.229.34
       ansible_port: 22
       ansible_user: root
       public_ip: 155.138.229.34
       private_ip: 10.6.96.3
       leader: yes
-      # Needed if ansible_user != root
-      #ansible_become_method: sudo
-      #ansible_sudo_password: ....
-    # ...
     worker-01:
       # ...
       leader: no
@@ -71,13 +70,13 @@ Below are the options you can pass with `-e` for the setup playbook.
 `apply_traefik` Default: `yes`
 * Install traefik and the service load balancer.
 
-`apply_argo_workflows` Default: `yes`
+`apply_argo_workflows` Default: `no`
 * Install Argo Workflows.
 
-`apply_argo_cd` Default: `yes`
+`apply_argo_cd` Default: `no`
 * Install Argo CD.
 
-`apply_argo_events` Default: `yes`
+`apply_argo_events` Default: `no`
 * Install Argo Events.
 
 `apply_resolve_host_patcher` Default: `yes`
