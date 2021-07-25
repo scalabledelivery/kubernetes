@@ -1,0 +1,117 @@
+# This is an example cronjob that can be used to automate kubectl commands
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: example-cronjob
+automountServiceAccountToken: true
+
+
+# ClusterRoles and ClusterRoleBindings are cluster-wide.
+# These permissions permit the job to view and delete namespaces
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: example-cronjob
+rules:
+- apiGroups:
+    - "*"
+  resources:
+    - namespaces
+  verbs:
+    - get
+    - list
+    - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: example-cronjob
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: example-cronjob
+subjects:
+- kind: ServiceAccount
+  name: example-cronjob
+  namespace: default
+
+# RoleBindings only allow access in the same namespace
+# These permissions allow the job to view and delete pods
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: example-cronjob
+rules:
+- apiGroups:
+    - "*"
+  resources:
+    - pods
+  verbs:
+    - get
+    - list
+    - delete
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: example-cronjob
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: example-cronjob
+subjects:
+- kind: ServiceAccount
+  name: example-cronjob
+  namespace: default
+
+# This is the example CronJob
+# You should edit spec.jobTemplate.spec.template.spec.containers[0].command accordingly.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: example-cronjob
+spec:
+  schedule: "@weekly"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: example-cronjob
+          automountServiceAccountToken: true
+          containers:
+          - name: example-cronjob
+            image: bitnami/kubectl
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e # fail on errors
+              if [ "${K8S_NAMESPACE}" == "" ]; then
+                echo K8S_NAMESPACE not set
+                exit 1
+              fi
+
+              if [ "${K8S_POD_NAME}" == "" ]; then
+                echo K8S_POD_NAME not set
+                exit 1
+              fi
+
+              # do kubectl commands here
+              kubectl get pods -A
+
+          restartPolicy: Never
