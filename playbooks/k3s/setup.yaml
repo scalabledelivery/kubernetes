@@ -1,16 +1,128 @@
 - hosts: all
   # Facts are not neccessary for this particular playbook. 
   gather_facts: yes
+  any_errors_fatal: true
   vars:
-    k3s_flags: "" # --disable traefik
+    setup_internal_ca: yes
+    internal_ca_update_command:
+      Debian: update-ca-certificates
+      Suse: update-ca-certificates
+      RedHat: update-ca-trust
+    internal_ca_path:
+      Debian: /usr/local/share/ca-certificates/cluster-shared-ca.crt
+      Suse: /usr/local/share/ca-certificates/cluster-shared-ca.crt
+      RedHat: /etc/pki/ca-trust/source/anchors/cluster-shared-ca.crt
+
+
+    apply_resolve_host_patcher: yes
+    apply_longhorn: yes
+    apply_argo_workflows: no
+    apply_argo_cd: no
+    apply_argo_events: no
+
+    k3s_flags: "" # --disable=traefik,local-storage
     k3s_version: "v1.21.2+k3s1"
+
+    # OS Family Specific
+    # ref: https://docs.ansible.com/ansible/2.6/user_guide/playbooks_conditionals.html#ansible-os-family
+    packages:
+      Debian:
+      - open-iscsi
+      Suse:
+      - open-iscsi
+      RedHat:
+      - iscsi-initiator-utils
+
+    services:
+      Debian:
+      - iscsid
+      Suse:
+      - iscsid
+      RedHat:
+      - iscsid
+
   tasks:
-    - name: genesis discovery - get master token
+
+    # This section does host setup
+    # -----------------------------------------------------------------------------
+    - name: os prep - packages
+      package:
+        name: "{{ packages[ansible_os_family] }}"
+        state: latest
+
+    - name: os prep - services
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      with_items: "{{ services[ansible_os_family] }}"
+
+
+    # This section installs and syncs a CA certificate and key across all nodes
+    # to be used by the kubernetes cluster.
+    #
+    # Doing this allows us to create certificates for private registries that can
+    # be used from inside the cluster.
+    # -----------------------------------------------------------------------------
+    - name: internal ca discovery - find node with internal cert and key
+      shell: "[ -f /etc/ssl/k8s/cluster-shared-ca.crt ] && [ -f /etc/ssl/k8s/cluster-shared-ca.key ] && echo success || echo fail"
+      register: ca_cert_test
+      when: setup_internal_ca|bool == true
+
+    - name: internal ca setup - ensure directory /etc/ssl/k8s exists
+      file:
+        path: /etc/ssl/k8s
+        state: directory
+      when: setup_internal_ca|bool == true
+
+    - name: internal ca setup - generate new cert and key
+      shell: openssl req -subj '/C=K8/ST=Cluster/L=Pod/O=Internal/OU=Pipelines/CN=*.cluster.local' -nodes -x509 -newkey rsa:4096 -keyout /etc/ssl/k8s/cluster-shared-ca.key -out /etc/ssl/k8s/cluster-shared-ca.crt -days 1825
+      when: >
+        inventory_hostname == groups['all'] | default([]) | first
+        and
+        (groups['all'] | default([]) | map('extract', hostvars) | rejectattr('ca_cert_test.stdout', 'equalto', 'fail') | length) == 0
+
+    - name: internal ca discovery - find node with internal cert and key
+      shell: "[ -f /etc/ssl/k8s/cluster-shared-ca.crt ] && [ -f /etc/ssl/k8s/cluster-shared-ca.key ] && echo success || echo fail"
+      register: ca_cert_test
+      when: setup_internal_ca|bool == true
+
+    - name: internal ca sync - pull down /etc/ssl/k8s
+      synchronize:
+        src: /etc/ssl/k8s/
+        dest: ./tmp-etc-ssl-k8s
+        mode: pull
+      when: >
+        setup_internal_ca|bool == true
+        and
+        inventory_hostname == (groups['all'] | default([]) | map('extract', hostvars) | rejectattr('ca_cert_test.stdout', 'equalto', 'fail') | map(attribute='inventory_hostname') | first )
+
+    - name: internal ca sync - push /etc/ssl/k8s
+      synchronize:
+        src: ./tmp-etc-ssl-k8s/
+        dest: /etc/ssl/k8s
+        mode: push
+      when: >
+        setup_internal_ca|bool == true
+    
+    - name: cleanup - remove temp directory ./tmp-etc-ssl-k8s
+      local_action: file path=./tmp-etc-ssl-k8s state=absent
+      run_once: yes
+      when: setup_internal_ca|bool == true
+
+    - name: internal ca setup - update certificate authority certs
+      shell: |
+        [ -L "{{ internal_ca_path[ansible_os_family] }}" ] || ln -s /etc/ssl/k8s/cluster-shared-ca.crt "{{ internal_ca_path[ansible_os_family] }}"
+        {{ internal_ca_update_command[ansible_os_family] }}
+
+    # This section does k3s setup
+    # -----------------------------------------------------------------------------
+    - name: k3s discovery - get master token
       shell: "[ -f /var/lib/rancher/k3s/server/node-token ] && cat /var/lib/rancher/k3s/server/node-token || echo fail"
       register: master_token
       when: inventory_hostname in groups['masters'] | default([])
-
-    - name: genesis init - generate worker token
+    
+    - name: k3s genesis - generate worker token
       shell: "mkdir -p /var/lib/rancher/k3s/agent/; openssl rand -hex 24 | tee /var/lib/rancher/k3s/agent/node-token"
       register: worker_token
       when: >
@@ -18,7 +130,7 @@
         and
         (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | length) == 0
 
-    - name: genesis init - install k3s
+    - name: k3s genesis - install k3s
       shell: |
         curl -sfL https://get.k3s.io | \
         K3S_VERSION='{{ k3s_version }}' \
@@ -34,18 +146,34 @@
         and
         (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | length) == 0
 
-
-    - name: discovery - get master token
+    - name: k3s discovery - get master token
       shell: "[ -f /var/lib/rancher/k3s/server/node-token ] && cat /var/lib/rancher/k3s/server/node-token || echo fail"
       register: master_token
       when: inventory_hostname in groups['masters'] | default([])
 
-    - name: discovery - get worker token
+    - name: k3s discovery - get worker token
       shell: "[ -f /var/lib/rancher/k3s/agent/node-token ] && cat /var/lib/rancher/k3s/agent/node-token || echo fail"
       register: worker_token
       when: inventory_hostname in groups['masters'] | default([])
 
-    - name: install k3s on new master nodes
+    - name: k3s install - setup new worker nodes
+      shell: |
+        {% set genesis_ip = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='internal_ip') | first) %}
+        {% set master_token = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='master_token.stdout') | first) %}
+        {% set worker_token = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('worker_token.stdout', 'equalto', 'fail') | map(attribute='worker_token.stdout') | first) %}
+
+        curl -sfL https://get.k3s.io | K3S_VERSION='{{ k3s_version }}' \
+          sh -s - agent \
+          --server 'https://{{ genesis_ip }}:6443' \
+          --token {{ worker_token }} \
+          --node-ip {{ internal_ip }} \
+          --node-external-ip {{ external_ip }}
+        
+      args:
+        creates: /var/lib/rancher/k3s
+      when: inventory_hostname in groups['workers'] | default([])
+
+    - name: k3s install - setup new master nodes
       shell: |
         {% set genesis_ip = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='internal_ip') | first) %}
         {% set master_token = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='master_token.stdout') | first) %}
@@ -69,23 +197,104 @@
       throttle: 1
       when: inventory_hostname in groups['masters'] | default([])
 
-    - name: install k3s on new worker nodes
-      shell: |
-        {% set genesis_ip = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='internal_ip') | first) %}
-        {% set master_token = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='master_token.stdout') | first) %}
-        {% set worker_token = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('worker_token.stdout', 'equalto', 'fail') | map(attribute='worker_token.stdout') | first) %}
-
-        curl -sfL https://get.k3s.io | K3S_VERSION='{{ k3s_version }}' \
-          sh -s - agent \
-          --server 'https://{{ genesis_ip }}:6443' \
-          --token {{ worker_token }} \
-          --node-ip {{ internal_ip }} \
-          --node-external-ip {{ external_ip }}
-        
-      args:
-        creates: /var/lib/rancher/k3s
-      when: inventory_hostname in groups['workers'] | default([])
-
-    - name: wait for nodes to be ready
+    - name: k3s install - wait for nodes to be ready
       shell: kubectl wait nodes {% for host in groups['all'] %}{{ hostvars[host]['ansible_hostname'] }} {% endfor %} --for condition=ready --timeout=5m
       when: inventory_hostname == groups['masters'] | default([]) | first
+      register: result
+      until: result.rc == 0
+      retries: 5
+      delay: 1
+
+    # This section applies cluster tools
+    # -----------------------------------------------------------------------------
+    - name: kubectl apply - latest resolve-host-patcher
+      shell: kubectl apply -f https://raw.githubusercontent.com/scalabledelivery/resolve-host-patcher/main/daemonset.yaml
+      when: >
+        apply_resolve_host_patcher|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    # install lonhorn.io
+    - name: kubectl apply - longhorn.io
+      shell: |
+        curl -sL https://raw.githubusercontent.com/longhorn/longhorn/v1.1.2/deploy/longhorn.yaml | \
+          sed -e 's/#- name: KUBELET_ROOT_DIR/- name: KUBELET_ROOT_DIR/g' \
+              -e 's|#  value: /var/lib/rancher/k3s/agent/kubelet|  value: /var/lib/rancher/k3s/agent/kubelet|g' | \
+          kubectl apply -f -
+      when: >
+        apply_longhorn|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    - name: wait for longhorn-system ready
+      shell: kubectl -n longhorn-system wait --for=condition=ready --all pods --timeout=10m
+      when: >
+        apply_longhorn|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    # Install argo cd
+    - name: create argo cd namespace
+      shell: kubectl create namespace argocd || exit 0
+      when: >
+        apply_argo_cd|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    - name: install argo cd
+      shell: kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+      when: >
+        apply_argo_cd|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    - name: wait for argo cd ready
+      shell: kubectl -n argocd wait --for=condition=ready --all pods --timeout=10m
+      when: >
+        apply_argo_cd|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    # Install argo workflows
+    - name: create argo namespace
+      shell: kubectl create namespace argo || exit 0
+      when: >
+        apply_argo_workflows|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    - name: install argo workflows
+      shell: kubectl -n argo apply -f https://raw.githubusercontent.com/argoproj/argo-workflows/stable/manifests/install.yaml
+      when: >
+        apply_argo_workflows|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    - name: wait for argo workflows ready
+      shell: kubectl -n argo wait --for=condition=ready --all pods --timeout=10m
+      when: >
+        apply_argo_workflows|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    # Install argo events
+    - name: create argo events namespace
+      shell: kubectl create namespace argo-events || exit 0
+      when: >
+        apply_argo_events|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    - name: install argo events
+      shell: kubectl apply -f https://raw.githubusercontent.com/argoproj/argo-events/stable/manifests/install.yaml
+      when: >
+        apply_argo_events|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    - name: wait for argo events ready
+      shell: kubectl -n argo-events wait --for=condition=ready --all pods --timeout=10m
+      when: >
+        apply_argo_events|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first

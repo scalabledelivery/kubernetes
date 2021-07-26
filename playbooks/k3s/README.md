@@ -24,8 +24,14 @@ $ ansible-playbook -i inventory.yaml playbooks/k3s/setup.yaml
 
 Do the setup, but without traefik.
 ```text
-$ ansible-playbook -i inventory.yaml playbooks/k3s/setup.yaml -e k3s_flags="--disable traefik"
+$ ansible-playbook -i inventory.yaml playbooks/k3s/setup.yaml -e k3s_flags="--disable=traefik"
 ```
+
+Do the setup but without traefik or local-storage.
+```text
+$ ansible-playbook -i inventory.yaml playbooks/k3s/setup.yaml -e k3s_flags="--disable=traefik,local-storage"
+```
+
 ### Setup Options
 Below are the options you can pass with `-e` for the setup playbook.
 
@@ -34,3 +40,21 @@ Below are the options you can pass with `-e` for the setup playbook.
 
 `k3s_version` Default: `v1.21.2+k3s1`
 * Set the kubernetes version.
+
+`setup_internal_ca` Default: `yes`
+* This will create a root CA that pods can use to make self-signed certs via an init container. This is useful for setting up registries that are only cluser accessible.
+
+`apply_longhorn` Default: `yes`
+* Install the longhorn.io CSI.
+
+`apply_argo_workflows` Default: `no`
+* Install Argo Workflows.
+
+`apply_argo_cd` Default: `no`
+* Install Argo CD.
+
+`apply_argo_events` Default: `no`
+* Install Argo Events.
+
+`apply_resolve_host_patcher` Default: `yes`
+* Install resolve host patcher.
