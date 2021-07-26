@@ -4,18 +4,22 @@
   any_errors_fatal: true
   vars:
     setup_internal_ca: yes
+    
     internal_ca_update_command:
       Debian: update-ca-certificates
       Suse: update-ca-certificates
       RedHat: update-ca-trust
+
     internal_ca_path:
       Debian: /usr/local/share/ca-certificates/cluster-shared-ca.crt
       Suse: /usr/local/share/ca-certificates/cluster-shared-ca.crt
       RedHat: /etc/pki/ca-trust/source/anchors/cluster-shared-ca.crt
 
 
-    apply_resolve_host_patcher: yes
     apply_longhorn: yes
+    patch_longhorn_default: yes
+
+    apply_resolve_host_patcher: yes
     apply_argo_workflows: no
     apply_argo_cd: no
     apply_argo_events: no
@@ -230,6 +234,19 @@
       shell: kubectl -n longhorn-system wait --for=condition=ready --all pods --timeout=10m
       when: >
         apply_longhorn|bool == true
+        and
+        inventory_hostname == groups['masters'] | default([]) | first
+
+    - name: kubectl patch - make longhorn.io default
+      shell: |
+        for sc in $(kubectl get storageclass -o=jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}'); do
+          kubectl patch storageclass ${sc} -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":""}}}'
+        done
+        kubectl patch storageclass longhorn -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' || exit 1
+      when: >
+        apply_longhorn|bool == true
+        and
+        patch_longhorn_default|bool == true
         and
         inventory_hostname == groups['masters'] | default([]) | first
 

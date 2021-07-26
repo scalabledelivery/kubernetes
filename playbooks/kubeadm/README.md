@@ -52,6 +52,9 @@ Below are the options you can pass with `-e` for the setup playbook.
 `apply_longhorn` Default: `yes`
 * Install the longhorn.io CSI.
 
+`patch_longhorn_default` Default: `yes`
+* When `apply_longhorn` is `yes` longhorn will be patched to be the default StorageClass.
+
 `apply_traefik` Default: `yes`
 * Install traefik and the service load balancer.
 
