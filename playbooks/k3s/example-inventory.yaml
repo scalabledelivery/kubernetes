@@ -1,0 +1,51 @@
+all:
+  children:
+    masters:
+      hosts:
+        k3s-master-01:
+          ansible_host: 1.1.1.1
+          ansible_port: 22
+          ansible_user: root
+          ansible_ssh_pipelining: true
+          # node configurations
+          external_ip: 1.1.1.1
+          internal_ip: 10.1.1.1
+
+        k3s-master-02:
+          ansible_host: 2.2.2.2
+          ansible_port: 22
+          ansible_user: root
+          ansible_ssh_pipelining: true
+          # node configurations
+          external_ip: 2.2.2.2
+          internal_ip: 10.2.2.2
+
+        k3s-master-03:
+          ansible_host: 3.3.3.3
+          ansible_port: 22
+          ansible_user: root
+          ansible_ssh_pipelining: true
+          # node configurations
+          external_ip: 3.3.3.3
+          internal_ip: 10.3.3.3
+          
+    workers:
+      hosts:
+
+        k3s-worker-04:
+          ansible_host: 4.4.4.4
+          ansible_port: 22
+          ansible_user: root
+          ansible_ssh_pipelining: true
+          # node configurations
+          external_ip: 4.4.4.4
+          internal_ip: 10.4.4.4
+
+        k3s-worker-05:
+          ansible_host: 5.5.5.5
+          ansible_port: 22
+          ansible_user: root
+          ansible_ssh_pipelining: true
+          # node configurations
+          external_ip: 5.5.5.5
+          internal_ip: 10.5.5.5

@@ -1,0 +1,91 @@
+- hosts: all
+  # Facts are not neccessary for this particular playbook. 
+  gather_facts: yes
+  vars:
+    k3s_flags: "" # --disable traefik
+    k3s_version: "v1.21.2+k3s1"
+  tasks:
+    - name: genesis discovery - get master token
+      shell: "[ -f /var/lib/rancher/k3s/server/node-token ] && cat /var/lib/rancher/k3s/server/node-token || echo fail"
+      register: master_token
+      when: inventory_hostname in groups['masters'] | default([])
+
+    - name: genesis init - generate worker token
+      shell: "mkdir -p /var/lib/rancher/k3s/agent/; openssl rand -hex 24 | tee /var/lib/rancher/k3s/agent/node-token"
+      register: worker_token
+      when: >
+        inventory_hostname == groups['masters'] | default([]) | first
+        and
+        (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | length) == 0
+
+    - name: genesis init - install k3s
+      shell: |
+        curl -sfL https://get.k3s.io | \
+        K3S_VERSION='{{ k3s_version }}' \
+        K3S_CLUSTER_INIT=true \
+        sh -s - server \
+        --advertise-address {{ internal_ip }} \
+        --node-ip {{ internal_ip }} \
+        --node-external-ip {{ external_ip }} \
+        --agent-token {{ worker_token.stdout }} \
+        {{ k3s_flags }}
+      when: >
+        inventory_hostname == groups['masters'] | default([]) | first
+        and
+        (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | length) == 0
+
+
+    - name: discovery - get master token
+      shell: "[ -f /var/lib/rancher/k3s/server/node-token ] && cat /var/lib/rancher/k3s/server/node-token || echo fail"
+      register: master_token
+      when: inventory_hostname in groups['masters'] | default([])
+
+    - name: discovery - get worker token
+      shell: "[ -f /var/lib/rancher/k3s/agent/node-token ] && cat /var/lib/rancher/k3s/agent/node-token || echo fail"
+      register: worker_token
+      when: inventory_hostname in groups['masters'] | default([])
+
+    - name: install k3s on new master nodes
+      shell: |
+        {% set genesis_ip = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='internal_ip') | first) %}
+        {% set master_token = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='master_token.stdout') | first) %}
+        {% set worker_token = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('worker_token.stdout', 'equalto', 'fail') | map(attribute='worker_token.stdout') | first) %}
+
+        mkdir -p /var/lib/rancher/k3s/agent
+        echo "{{ worker_token }}" > /var/lib/rancher/k3s/agent/node-token
+
+        curl -sfL https://get.k3s.io | K3S_VERSION='{{ k3s_version }}' \
+          K3S_TOKEN='{{ master_token }}' \
+          K3S_URL='https://{{ genesis_ip }}:6443' \
+          sh -s - server \
+          --advertise-address {{ internal_ip }} \
+          --agent-token {{ worker_token }} \
+          --node-ip {{ internal_ip }} \
+          --node-external-ip {{ external_ip }} \
+          {{ k3s_flags }}
+
+      args:
+        creates: /var/lib/rancher/k3s
+      throttle: 1
+      when: inventory_hostname in groups['masters'] | default([])
+
+    - name: install k3s on new worker nodes
+      shell: |
+        {% set genesis_ip = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='internal_ip') | first) %}
+        {% set master_token = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='master_token.stdout') | first) %}
+        {% set worker_token = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('worker_token.stdout', 'equalto', 'fail') | map(attribute='worker_token.stdout') | first) %}
+
+        curl -sfL https://get.k3s.io | K3S_VERSION='{{ k3s_version }}' \
+          sh -s - agent \
+          --server 'https://{{ genesis_ip }}:6443' \
+          --token {{ worker_token }} \
+          --node-ip {{ internal_ip }} \
+          --node-external-ip {{ external_ip }}
+        
+      args:
+        creates: /var/lib/rancher/k3s
+      when: inventory_hostname in groups['workers'] | default([])
+
+    - name: wait for nodes to be ready
+      shell: kubectl wait nodes {% for host in groups['all'] %}{{ hostvars[host]['ansible_hostname'] }} {% endfor %} --for condition=ready --timeout=5m
+      when: inventory_hostname == groups['masters'] | default([]) | first

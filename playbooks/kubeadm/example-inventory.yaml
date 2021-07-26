@@ -1,0 +1,52 @@
+all:
+  hosts:
+
+    leader-01:
+      ansible_host: 1.1.1.1
+      ansible_port: 22
+      ansible_user: root
+      ansible_ssh_pipelining: true
+      # node options
+      public_ip: 1.1.1.1
+      private_ip: 10.1.1.1
+      leader: yes
+
+    leader-02:
+      ansible_host: 2.2.2.2
+      ansible_port: 22
+      ansible_user: root
+      ansible_ssh_pipelining: true
+      # node options
+      public_ip: 2.2.2.2
+      private_ip: 10.2.2.2
+      leader: yes
+
+    leader-03:
+      ansible_host: 3.3.3.3
+      ansible_port: 22
+      ansible_user: root
+      ansible_ssh_pipelining: true
+      # node options
+      public_ip: 3.3.3.3
+      private_ip: 10.3.3.3
+      leader: yes
+
+    worker-01:
+      ansible_host: 4.4.4.4
+      ansible_port: 22
+      ansible_user: root
+      ansible_ssh_pipelining: true
+      # node options
+      public_ip: 4.4.4.4
+      private_ip: 10.4.4.4
+      leader: yes
+
+    worker-02:
+      ansible_host: 5.5.5.5
+      ansible_port: 22
+      ansible_user: root
+      ansible_ssh_pipelining: true
+      # node options
+      public_ip: 5.5.5.5
+      private_ip: 10.5.5.5
+      leader: yes
