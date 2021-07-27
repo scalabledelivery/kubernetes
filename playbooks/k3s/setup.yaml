@@ -4,7 +4,7 @@
   any_errors_fatal: true
   vars:
     setup_internal_ca: yes
-    
+
     internal_ca_update_command:
       Debian: update-ca-certificates
       Suse: update-ca-certificates
@@ -163,7 +163,6 @@
     - name: k3s install - setup new worker nodes
       shell: |
         {% set genesis_ip = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='internal_ip') | first) %}
-        {% set master_token = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('master_token.stdout', 'equalto', 'fail') | map(attribute='master_token.stdout') | first) %}
         {% set worker_token = (groups['masters'] | default([]) | map('extract', hostvars) | rejectattr('worker_token.stdout', 'equalto', 'fail') | map(attribute='worker_token.stdout') | first) %}
 
         curl -sfL https://get.k3s.io | K3S_VERSION='{{ k3s_version }}' \
