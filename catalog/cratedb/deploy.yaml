@@ -35,6 +35,19 @@ spec:
       labels:
         app: crate
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                       - crate
+                topologyKey: kubernetes.io/hostname
+
       # set the correct memory map limit.
       initContainers:
       - name: init-sysctl
