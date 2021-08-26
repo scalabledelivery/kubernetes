@@ -1,0 +1,101 @@
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: crate-internal
+  labels:
+    app: crate
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4300
+    name: crate-internal
+  - port: 4200
+    name: crate-web
+  - port: 5432
+    name: postgres
+  selector:
+    app: crate
+---
+kind: StatefulSet
+apiVersion: "apps/v1"
+metadata:
+  # This is the name used as a prefix for all pods in the set.
+  name: crate
+spec:
+  serviceName: "crate-set"
+  # Our cluster has three nodes.
+  replicas: 3
+  selector:
+    matchLabels:
+      # The pods in this cluster have the `app:crate` app label.
+      app: crate
+  template:
+    metadata:
+      labels:
+        app: crate
+    spec:
+      # set the correct memory map limit.
+      initContainers:
+      - name: init-sysctl
+        image: busybox
+        imagePullPolicy: IfNotPresent
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+        securityContext:
+          privileged: true
+      # This final section is the core of the StatefulSet configuration.
+      # It defines the container to run in each pod.
+      containers:
+      - name: crate
+        # Use the CrateDB 4.2.4 Docker image.
+        image: crate:4.6
+        # the initial master nodes are set explicitly via CLI flags
+        # use SRV records provided by k8s to discover nodes in crate cluster
+        args:
+          - -Cnode.name=${POD_NAME}
+          - -Ccluster.name=${CLUSTER_NAME}
+          - -Ccluster.initial_master_nodes=crate-0,crate-1,crate-2
+          - -Cdiscovery.seed_providers=srv
+          - -Cdiscovery.srv.query=_crate-internal._tcp.crate-internal.${NAMESPACE}.svc.cluster.local
+          - -Cgateway.recover_after_nodes=2
+          - -Cgateway.expected_nodes=${EXPECTED_NODES}
+          - -Cpath.data=/data
+        volumeMounts:
+            - mountPath: /data
+              name: data
+        resources:
+          limits:
+            memory: 512Mi
+        ports:
+        - containerPort: 4300
+          name: crate-internal
+        - containerPort: 4200
+          name: crate-web
+        - containerPort: 5432
+          name: postgres
+        env:
+          # Heap-size detected by cratedb
+        - name: CRATE_HEAP_SIZE
+          value: "256m"
+          # command-line options
+        - name: EXPECTED_NODES
+          value: "3"
+        - name: CLUSTER_NAME
+          value: "crate-cluster"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
