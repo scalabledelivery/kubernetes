@@ -24,6 +24,7 @@ metadata:
   name: crate
 spec:
   serviceName: "crate-set"
+  podManagementPolicy: "Parallel"
   # Our cluster has three nodes.
   replicas: 3
   selector:
@@ -56,6 +57,7 @@ spec:
         command: ["sysctl", "-w", "vm.max_map_count=262144"]
         securityContext:
           privileged: true
+
       # This final section is the core of the StatefulSet configuration.
       # It defines the container to run in each pod.
       containers:
@@ -79,6 +81,13 @@ spec:
         resources:
           limits:
             memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: "/"
+            port: crate-web
+            scheme: HTTP
+          initialDelaySeconds: 300
+          periodSeconds: 5
         ports:
         - containerPort: 4300
           name: crate-internal
